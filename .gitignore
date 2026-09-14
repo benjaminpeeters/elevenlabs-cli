@@ -1,0 +1,14 @@
+build/
+dist/
+.venv/
+out/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+*.mp3
+*.m4a
+*.wav
+*.opus
+*.pcm
+*.timing.json
+!tests/fixtures/*

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "elevenlabs-cli"
+version = "0.1.0"
+description = "Command-line interface over the official ElevenLabs SDK, with exact silence assembly and verification via ffmpeg."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Benjamin Peeters" }]
+keywords = ["elevenlabs", "tts", "text-to-speech", "audio", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = ["elevenlabs==2.68.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+elevenlabs-cli = "elevenlabs_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/benjaminpeeters/elevenlabs-cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/elevenlabs_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
