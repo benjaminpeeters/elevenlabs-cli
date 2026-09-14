@@ -7,7 +7,7 @@ import sys
 from typing import Callable, Sequence
 
 from . import __version__
-from .commands import account, clips, config_cmd, dialogue, isolate, join, sfx, stt, sts, tts, verify, voice, voices
+from .commands import account, clips, config_cmd, dialogue, isolate, join, measure, mix, music, noise, sfx, stt, sts, tts, verify, voice, voices
 from .errors import CliError
 
 REGISTRARS: list[Callable[[argparse._SubParsersAction], None]] = [
@@ -17,9 +17,13 @@ REGISTRARS: list[Callable[[argparse._SubParsersAction], None]] = [
     tts.register,
     join.register,
     verify.register,
+    mix.register,
+    measure.register,
     clips.register,
     dialogue.register,
     sfx.register,
+    noise.register,
+    music.register,
     stt.register,
     isolate.register,
     sts.register,
@@ -30,8 +34,8 @@ REGISTRARS: list[Callable[[argparse._SubParsersAction], None]] = [
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="elevenlabs-cli",
-        description="ElevenLabs from the command line: speech, dialogue, sound effects, transcription, voices, "
-        "plus exact silence assembly and verification with ffmpeg.",
+        description="ElevenLabs from the command line: speech, dialogue, sound effects, music, noise beds, transcription, voices, "
+        "plus exact silence assembly (join, verify), mixing and measurement with ffmpeg.",
     )
     parser.add_argument("--version", action="version", version=f"elevenlabs-cli {__version__}")
     parser.add_argument("--json", action="store_true", help="machine-readable output where the command supports it")

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 from elevenlabs.client import ElevenLabs
 from elevenlabs.core.api_error import ApiError
 from elevenlabs.types import DialogueInput, ModelSettingsResponseModel, VoiceSettings
@@ -42,6 +43,10 @@ def describe_api_error(exc: ApiError, what: str) -> CliError:
     return CliError(f"ElevenLabs API error while {what} (HTTP {exc.status_code}): {detail}")
 
 
+def network_error(exc: Exception, what: str) -> CliError:
+    return CliError(f"network error while {what}: {exc} (is api.elevenlabs.io reachable?)")
+
+
 def collect(chunks: Any) -> bytes:
     return b"".join(chunks)
 
@@ -54,6 +59,8 @@ def subscription(client: ElevenLabs) -> dict[str, Any]:
         sub = client.user.subscription.get()
     except ApiError as exc:
         raise describe_api_error(exc, "reading the subscription") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "reading the subscription") from exc
     return sub.model_dump()
 
 
@@ -62,6 +69,8 @@ def models(client: ElevenLabs) -> list[dict[str, Any]]:
         items = client.models.list()
     except ApiError as exc:
         raise describe_api_error(exc, "listing models") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "listing models") from exc
     return [m.model_dump() for m in items]
 
 
@@ -88,6 +97,8 @@ def get_voice(client: ElevenLabs, voice_id: str) -> dict[str, Any]:
         return client.voices.get(voice_id).model_dump()
     except ApiError as exc:
         raise describe_api_error(exc, f"reading voice {voice_id}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"reading voice {voice_id}") from exc
 
 
 def library_voices(client: ElevenLabs, **filters: Any) -> list[dict[str, Any]]:
@@ -96,6 +107,8 @@ def library_voices(client: ElevenLabs, **filters: Any) -> list[dict[str, Any]]:
         page = client.voices.get_shared(**filters)
     except ApiError as exc:
         raise describe_api_error(exc, "searching the voice library") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "searching the voice library") from exc
     return [v.model_dump() for v in page.voices]
 
 
@@ -104,6 +117,8 @@ def add_library_voice(client: ElevenLabs, public_user_id: str, voice_id: str, ne
         response = client.voices.share(public_user_id, voice_id, new_name=new_name)
     except ApiError as exc:
         raise describe_api_error(exc, f"adding library voice {voice_id}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"adding library voice {voice_id}") from exc
     return response.voice_id
 
 
@@ -112,6 +127,8 @@ def delete_voice(client: ElevenLabs, voice_id: str) -> None:
         client.voices.delete(voice_id)
     except ApiError as exc:
         raise describe_api_error(exc, f"deleting voice {voice_id}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"deleting voice {voice_id}") from exc
 
 
 # --- generation ------------------------------------------------------------------
@@ -181,7 +198,96 @@ def text_to_speech(
             request_id = response.headers.get("request-id")
     except ApiError as exc:
         raise describe_api_error(exc, f"generating speech with voice {voice_id}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"generating speech with voice {voice_id}") from exc
     return TtsResult(audio, request_id)
+
+
+@dataclass(frozen=True)
+class Alignment:
+    """Character-level timing returned with a render."""
+
+    characters: list[str]
+    starts: list[float]
+    ends: list[float]
+
+
+@dataclass(frozen=True)
+class TimedResult:
+    audio: bytes
+    alignment: Alignment | None
+    segments: list[tuple[int, float, float]]  # (line index, start, end) for dialogue renders
+
+
+def alignment_from(model: Any) -> Alignment | None:
+    if model is None:
+        return None
+    return Alignment(list(model.characters), list(model.character_start_times_seconds), list(model.character_end_times_seconds))
+
+
+def text_to_speech_timed(
+    client: ElevenLabs,
+    voice_id: str,
+    text: str,
+    model_id: str,
+    output_format: str,
+    language: str | None,
+    settings: Settings,
+    seed: int | None,
+    previous_text: str | None,
+    next_text: str | None,
+) -> TimedResult:
+    """Like ``text_to_speech`` but through the timestamps endpoint: audio plus character alignment."""
+    kwargs: dict[str, Any] = {"voice_id": voice_id, "text": text, "model_id": model_id, "output_format": output_format}
+    if language is not None:
+        kwargs["language_code"] = language
+    sdk_settings = settings.to_sdk()
+    if sdk_settings is not None:
+        kwargs["voice_settings"] = sdk_settings
+    if seed is not None:
+        kwargs["seed"] = seed
+    if previous_text is not None:
+        kwargs["previous_text"] = previous_text
+    if next_text is not None:
+        kwargs["next_text"] = next_text
+    try:
+        response = client.text_to_speech.convert_with_timestamps(**kwargs)
+    except ApiError as exc:
+        raise describe_api_error(exc, f"generating timed speech with voice {voice_id}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"generating timed speech with voice {voice_id}") from exc
+    return TimedResult(base64.b64decode(response.audio_base_64), alignment_from(response.alignment), [])
+
+
+def text_to_dialogue_timed(
+    client: ElevenLabs,
+    lines: list[tuple[str, str]],
+    model_id: str,
+    output_format: str,
+    language: str | None,
+    stability: float | None,
+    seed: int | None,
+) -> TimedResult:
+    """The dialogue endpoint with timestamps: audio, alignment and one (line, start, end) per voice segment."""
+    kwargs: dict[str, Any] = {
+        "inputs": [DialogueInput(text=text, voice_id=voice_id) for voice_id, text in lines],
+        "model_id": model_id,
+        "output_format": output_format,
+    }
+    if language is not None:
+        kwargs["language_code"] = language
+    if stability is not None:
+        kwargs["settings"] = ModelSettingsResponseModel(stability=stability)
+    if seed is not None:
+        kwargs["seed"] = seed
+    try:
+        response = client.text_to_dialogue.convert_with_timestamps(**kwargs)
+    except ApiError as exc:
+        raise describe_api_error(exc, "generating the timed dialogue") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "generating the timed dialogue") from exc
+    segments = [(s.dialogue_input_index, s.start_time_seconds, s.end_time_seconds) for s in response.voice_segments]
+    return TimedResult(base64.b64decode(response.audio_base_64), alignment_from(response.alignment), segments)
 
 
 def text_to_dialogue(
@@ -208,6 +314,8 @@ def text_to_dialogue(
         return collect(client.text_to_dialogue.convert(**kwargs))
     except ApiError as exc:
         raise describe_api_error(exc, "generating the dialogue") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "generating the dialogue") from exc
 
 
 def sound_effect(client: ElevenLabs, text: str, duration: float | None, prompt_influence: float | None, output_format: str, loop: bool) -> bytes:
@@ -220,6 +328,20 @@ def sound_effect(client: ElevenLabs, text: str, duration: float | None, prompt_i
         return collect(client.text_to_sound_effects.convert(**kwargs))
     except ApiError as exc:
         raise describe_api_error(exc, "generating the sound effect") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "generating the sound effect") from exc
+
+
+def music(client: ElevenLabs, prompt: str, seconds: float, output_format: str, instrumental: bool, seed: int | None) -> bytes:
+    kwargs: dict[str, Any] = {"prompt": prompt, "music_length_ms": int(seconds * 1000), "output_format": output_format, "force_instrumental": instrumental}
+    if seed is not None:
+        kwargs["seed"] = seed
+    try:
+        return collect(client.music.compose(**kwargs))
+    except ApiError as exc:
+        raise describe_api_error(exc, "composing music") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "composing music") from exc
 
 
 def speech_to_text(client: ElevenLabs, path: Path, model_id: str, language: str | None, diarize: bool, num_speakers: int | None, audio_events: bool) -> dict[str, Any]:
@@ -233,6 +355,8 @@ def speech_to_text(client: ElevenLabs, path: Path, model_id: str, language: str 
             result = client.speech_to_text.convert(file=handle, **kwargs)
     except ApiError as exc:
         raise describe_api_error(exc, f"transcribing {path}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"transcribing {path}") from exc
     return result.model_dump()
 
 
@@ -242,6 +366,8 @@ def isolate(client: ElevenLabs, path: Path) -> bytes:
             return collect(client.audio_isolation.convert(audio=handle))
     except ApiError as exc:
         raise describe_api_error(exc, f"isolating voice in {path}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"isolating voice in {path}") from exc
 
 
 def speech_to_speech(client: ElevenLabs, path: Path, voice_id: str, model_id: str, output_format: str, settings: Settings, seed: int | None, remove_noise: bool) -> bytes:
@@ -256,6 +382,8 @@ def speech_to_speech(client: ElevenLabs, path: Path, voice_id: str, model_id: st
             return collect(client.speech_to_speech.convert(audio=handle, **kwargs))
     except ApiError as exc:
         raise describe_api_error(exc, f"converting {path} to voice {voice_id}") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, f"converting {path} to voice {voice_id}") from exc
 
 
 @dataclass(frozen=True)
@@ -285,6 +413,8 @@ def design_voice(client: ElevenLabs, description: str, text: str | None, model_i
         response = client.text_to_voice.design(**kwargs)
     except ApiError as exc:
         raise describe_api_error(exc, "designing a voice") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "designing a voice") from exc
     return [
         VoicePreview(p.generated_voice_id, base64.b64decode(p.audio_base_64), p.media_type, p.duration_secs, p.language)
         for p in response.previews
@@ -296,6 +426,8 @@ def create_designed_voice(client: ElevenLabs, name: str, description: str, gener
         voice = client.text_to_voice.create(voice_name=name, voice_description=description, generated_voice_id=generated_voice_id)
     except ApiError as exc:
         raise describe_api_error(exc, "saving the designed voice") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "saving the designed voice") from exc
     return voice.voice_id
 
 
@@ -308,6 +440,8 @@ def clone_voice(client: ElevenLabs, name: str, samples: list[Path], description:
         response = client.voices.ivc.create(**kwargs)
     except ApiError as exc:
         raise describe_api_error(exc, "cloning the voice") from exc
+    except httpx.HTTPError as exc:
+        raise network_error(exc, "cloning the voice") from exc
     finally:
         for handle in handles:
             handle.close()

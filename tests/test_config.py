@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from elevenlabs_cli.cli import main
-from elevenlabs_cli.config import Config, coerce, read_key_file, validate
+from elevenlabs_cli.config import Config, check_ranges, coerce, read_key_file, validate
 from elevenlabs_cli.errors import CliError
 
 
@@ -29,11 +29,13 @@ def test_validate_rejects_unknown_key(config_file: Path) -> None:
         ("voices", {"en": "not-a-dict"}, "alias -> voice id"),
         ("voices", {"en": {"narrator": ""}}, "non-empty voice id"),
         ("default_model", "", "non-empty string"),
+        ("sample_rate", 44000, "must be one of"),
+        ("channels", 3, "must be 1 or 2"),
     ],
 )
 def test_coerce_errors(key: str, value: object, message: str) -> None:
     with pytest.raises(CliError, match=message):
-        coerce(key, value)
+        check_ranges(key, coerce(key, value))
 
 
 def test_coerce_from_strings() -> None:
@@ -116,6 +118,7 @@ def test_cli_config_init_from_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     values = json.loads(target.read_text())
     assert values["api_key_file"] == str(key)
     assert values["default_model"] == "eleven_v3"
+    assert values["sample_rate"] == 48000 and values["channels"] == 1
     assert main(["config", "init"]) == 1
     assert "already exists" in capsys.readouterr().err
 

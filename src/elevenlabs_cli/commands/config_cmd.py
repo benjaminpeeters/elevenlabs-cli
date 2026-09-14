@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..config import CONFIG_ENV, SCHEMA, Config, coerce, config_path, defaults
+from ..config import CONFIG_ENV, SCHEMA, Config, coerce, config_path, defaults, validate
 from ..errors import CliError
 
 
@@ -23,6 +23,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     init.add_argument("--default-model", help="model used when --model is absent (default eleven_v3)")
     init.add_argument("--force", action="store_true", help="overwrite an existing file")
     init.set_defaults(func=run_init)
+
+    upgrade = sub.add_parser("upgrade", help="add keys a newer CLI introduced, with their defaults; existing values untouched")
+    upgrade.set_defaults(func=run_upgrade)
 
     show = sub.add_parser("show", help="print the config as JSON (the key itself is never shown)")
     show.set_defaults(func=run_show)
@@ -66,6 +69,25 @@ def run_init(args: Any) -> None:
     config.save()
     print(f"wrote {path}")
     print(f"override the location with ${CONFIG_ENV} or --config")
+
+
+def run_upgrade(args: Any) -> None:
+    path = config_path(args.config)
+    if not path.is_file():
+        raise CliError(f"no config file at {path}; run 'elevenlabs-cli config init'")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise CliError("config file must contain a JSON object")
+    unknown = [key for key in raw if key not in SCHEMA]
+    if unknown:
+        raise CliError(f"unknown keys in {path}: {', '.join(unknown)}; remove them first")
+    added = [key for key in SCHEMA if key not in raw]
+    fresh = defaults()
+    for key in added:
+        raw[key] = fresh[key]
+    config = Config(path, validate(raw))
+    config.save()
+    print(f"added {len(added)} key(s): {', '.join(added) if added else 'none'}")
 
 
 def run_show(args: Any) -> None:

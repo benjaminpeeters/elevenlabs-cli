@@ -16,7 +16,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--duration", type=float, help="seconds (0.5..30); default lets the model choose")
     parser.add_argument("--prompt-influence", dest="prompt_influence", type=float, help="0..1")
     parser.add_argument("--loop", action="store_true", help="make it loopable")
-    parser.add_argument("--format")
+    parser.add_argument("--format", help="default: pcm_<sample_rate>, wrapped into a WAV (sound effects offer no wav_* format)")
     parser.add_argument("--out")
     parser.set_defaults(func=run)
 
@@ -26,7 +26,7 @@ def run(args: Any) -> None:
     out = ctx.resolve_out(args.out)
     length = "model-chosen length" if args.duration is None else f"{args.duration:g} s"
     confirm_spend(ctx, Spend(None, None, f"sound effect, {length}: billed per generation, not per character"))
-    fmt = ctx.output_format(args.format)
+    fmt = ctx.api_format(args.format, "pcm")
     data = api.sound_effect(ctx.client, args.text, args.duration, args.prompt_influence, fmt, args.loop)
-    audio.decode_api_audio(data, fmt, out, ctx.workdir("sfx"))
+    audio.write_api_audio(data, fmt, out, ctx.workdir("sfx"), 1)
     report_saved(out)

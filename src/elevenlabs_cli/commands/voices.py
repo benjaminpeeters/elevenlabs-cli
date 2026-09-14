@@ -64,6 +64,37 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     delete.add_argument("voice_id")
     delete.set_defaults(func=run_delete)
 
+    audition = sub.add_parser(
+        "audition",
+        help="render candidate voices on a lab protocol with a settings grid; trials go to the lab",
+        description="Protocols live in <config dir>/lab/protocols/<use-case>/<isolation|longform|contrast>.txt. "
+        "The contrast protocol is a dialogue: 'Candidate:' lines by the voice under test, 'Partner:' lines by the config's reference_partner. "
+        "Every trial is saved as samples/<voice-id>/<trial-id>.m4a plus a JSON with settings and measurements; rate them with 'voices rate'.",
+    )
+    audition.add_argument("--use-case", dest="use_case", required=True, help="e.g. en-dialogue-elderly")
+    audition.add_argument("--protocol", required=True, help="isolation | longform | contrast")
+    audition.add_argument("--voices", nargs="+", required=True, help="voice ids, names or aliases (must be in the account)")
+    audition.add_argument("--grid", choices=("single", "default", "wide"), default="single", help="single: v3 0.35 + v2 0.5; default: v3 x3 + v2 x4; wide: adds v3 1.0 and v2 speed 0.85")
+    audition.add_argument("--models", default="eleven_v3,eleven_multilingual_v2", help="comma-separated subset of the grid's models")
+    audition.add_argument("--language")
+    audition.add_argument("--lufs", type=float, default=-18.0, help="per-clip loudness of the samples (comparable listening)")
+    audition.add_argument("--dry-run", action="store_true")
+    audition.set_defaults(func=run_audition)
+
+    rate = sub.add_parser("rate", help="record a verdict (1..5) and a note on a trial")
+    rate.add_argument("trial_id")
+    rate.add_argument("verdict", type=int)
+    rate.add_argument("--note", default="")
+    rate.set_defaults(func=run_rate)
+
+    shortlist = sub.add_parser("shortlist", help="best-rated voices for a use case, from the lab")
+    shortlist.add_argument("--use-case", dest="use_case", required=True)
+    shortlist.add_argument("--language")
+    shortlist.set_defaults(func=run_shortlist)
+
+    index = sub.add_parser("index", help="rebuild the lab index from the trial files")
+    index.set_defaults(func=run_index)
+
 
 def labels_text(labels: dict[str, Any] | None) -> str:
     if not labels:
@@ -131,12 +162,12 @@ def run_sample(args: Any) -> None:
     model = ctx.model(args.model)
     chars = billable_chars(text)
     confirm_spend(ctx, Spend(chars * len(args.voices), estimate_credits(text, model) * len(args.voices), f"{len(args.voices)} sample(s) with {model}"))
-    fmt = ctx.output_format(None)
+    fmt = "mp3_44100_128"  # samples are for listening, not for the pipeline
     for name in args.voices:
         voice_id = resolve_voice(ctx, name, args.language)
         result = api.text_to_speech(ctx.client, voice_id, text, model, fmt, args.language, api.Settings(), None, None, None, None)
         target = out_dir / f"{voice_id}.mp3"
-        audio.decode_api_audio(result.audio, fmt, target, ctx.workdir("sample"))
+        audio.write_api_audio(result.audio, fmt, target, ctx.workdir("sample"), 1)
         report_saved(target)
 
 
@@ -154,7 +185,7 @@ def download(url: str, target: Path) -> None:
             target.write_bytes(response.read())
     except OSError as exc:
         raise CliError(f"could not download {url}: {exc}") from exc
-    report_saved(target)
+    say(f"saved: {target}")  # stderr, so --json output stays parseable
 
 
 def slug(name: str) -> str:
@@ -188,3 +219,138 @@ def run_delete(args: Any) -> None:
     ctx = Context(args)
     api.delete_voice(ctx.client, args.voice_id)
     print(f"deleted voice {args.voice_id}")
+
+
+# --- the lab: auditions and ratings ---------------------------------------------------
+
+GRIDS: dict[str, list[tuple[str, dict[str, Any]]]] = {
+    "single": [
+        ("eleven_v3", {"stability": 0.35}),
+        ("eleven_multilingual_v2", {"stability": 0.5, "speed": 1.0}),
+    ],
+    "default": [
+        ("eleven_v3", {"stability": 0.0, "tag": "warmly"}),
+        ("eleven_v3", {"stability": 0.35}),
+        ("eleven_v3", {"stability": 0.6}),
+        ("eleven_multilingual_v2", {"stability": 0.35, "speed": 1.0}),
+        ("eleven_multilingual_v2", {"stability": 0.5, "speed": 1.0}),
+        ("eleven_multilingual_v2", {"stability": 0.35, "speed": 0.9}),
+        ("eleven_multilingual_v2", {"stability": 0.5, "speed": 0.9}),
+    ],
+}
+GRIDS["wide"] = GRIDS["default"] + [("eleven_v3", {"stability": 1.0}), ("eleven_multilingual_v2", {"stability": 0.5, "speed": 0.85})]
+
+
+def settings_of(model: str, grid_settings: dict[str, Any]) -> api.Settings:
+    if model == "eleven_v3":
+        return api.Settings(stability=grid_settings.get("stability"))
+    return api.Settings(stability=grid_settings.get("stability"), speed=grid_settings.get("speed"))
+
+
+def run_audition(args: Any) -> None:
+    from .. import lab
+    from ..cost import billable_chars, estimate_credits
+    from .dialogue import SpeakerProfile, render_dialogue
+
+    ctx = Context(args)
+    lab_root = lab.lab_dir(ctx.config.path)
+    protocol = lab.load_protocol(lab_root, args.use_case, args.protocol)
+    wanted = [m.strip() for m in args.models.split(",") if m.strip()]
+    grid = [(m, st) for m, st in GRIDS[args.grid] if m in wanted]
+    if not grid:
+        raise CliError(f"no grid entries for models {wanted}; grid '{args.grid}' covers {sorted({m for m, _ in GRIDS[args.grid]})}")
+    mine = {v["voice_id"]: v for v in api.my_voices(ctx.client)}
+    candidates = []
+    for name in args.voices:
+        voice_id = resolve_voice(ctx, name, args.language)
+        if voice_id not in mine:
+            raise CliError(f"voice {voice_id} is not in the account; add it first (voices add <id> --owner <public_owner_id> --name <name>)")
+        candidates.append(mine[voice_id])
+    is_contrast = args.protocol == "contrast"
+    partner = ctx.config.get("reference_partner")
+    if is_contrast and not partner:
+        raise CliError("the contrast protocol needs config reference_partner (a voice id)")
+    chars = billable_chars(protocol.text)
+    per_trial = {m: estimate_credits(protocol.text, m) for m, _ in grid}
+    total = sum(per_trial[m] for m, _ in grid) * len(candidates)
+    say(f"protocol {protocol.id}: {chars} characters; {len(candidates)} voice(s) x {len(grid)} setting(s) = {len(candidates) * len(grid)} trials, about {total:g} credits")
+    if args.dry_run:
+        for v in candidates:
+            for model, st in grid:
+                print(f"{v['name']:<40} {model:<24} {lab.settings_slug(model, st)}")
+        return
+    confirm_spend(ctx, Spend(chars * len(candidates) * len(grid), total, f"audition {args.use_case}/{args.protocol}, grid {args.grid}"))
+    from datetime import date
+    import elevenlabs as sdk
+
+    today = date.today().isoformat()
+    fmt = ctx.api_format(None, "wav")
+    for v in candidates:
+        for model, st in grid:
+            trial_id = lab.make_trial_id(today, args.use_case, args.protocol, model, st)
+            audio_path, _ = lab.trial_paths(lab_root, v["voice_id"], trial_id)
+            audio_path.parent.mkdir(parents=True, exist_ok=True)
+            text = protocol.text
+            if st.get("tag"):
+                text = "\n".join(f"[{st['tag']}] {line}" if line.strip() else line for line in text.splitlines())
+            workdir = ctx.workdir("audition")
+            if is_contrast:
+                profiles = {"Candidate": SpeakerProfile("Candidate", v["voice_id"], "", model, settings_of(model, st)), "Partner": SpeakerProfile("Partner", partner, "", None, api.Settings())}
+                timing = render_dialogue(ctx, text, profiles, "per-turn", audio_path, fmt=fmt, language=args.language, model=None, stability=None, seed=7, lufs=args.lufs, allow_truncated=True)
+                duration = timing.duration
+            else:
+                paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+                clips = []
+                for n, paragraph in enumerate(paragraphs):
+                    r = api.text_to_speech(ctx.client, v["voice_id"], paragraph, model, fmt, args.language if model != "eleven_multilingual_v2" else None, settings_of(model, st), 7, None, None, None)
+                    raw = workdir / f"{n:02d}.wav"
+                    audio.write_api_audio(r.audio, fmt, raw, workdir / "decode", 1)
+                    audio.check_not_truncated(raw, ctx.config.get("truncation_db"), f"{v['name']} paragraph {n + 1}", True)
+                    clips.append(audio.JoinItem(file=str(raw)))
+                    if n + 1 < len(paragraphs):
+                        clips.append(audio.JoinItem(silence=0.8))
+                timing = audio.join(clips, audio_path, workdir / "join", ctx.config.get("trim_threshold_db"), ctx.config.get("trim_margin_ms"), True, args.lufs, ctx.sample_rate, None)
+                duration = timing.duration
+            loud = audio.loudness(audio_path)
+            tail = audio.tail_level(audio_path)
+            trial = lab.Trial(
+                trial_id, v["voice_id"], v["name"], dict(v.get("labels") or {}), args.language or (v.get("labels") or {}).get("language"),
+                args.use_case, args.protocol, protocol.id, model, sdk.__version__, st, 7, today, audio_path.name,
+                {"duration_s": round(duration, 2), "integrated_lufs": loud.integrated_lufs, "true_peak_dbtp": loud.true_peak_dbtp,
+                 "loudness_range_lu": loud.loudness_range, "chars_per_second": round(chars / duration, 2), "tail_peak_db": round(tail.tail_peak_db, 1)},
+            )
+            lab.save_trial(lab_root, trial)
+            print(f"saved: {audio_path}  ({trial_id})")
+    lab.rebuild_index(lab_root)
+    say(f"rate with: elevenlabs-cli voices rate <trial-id> <1..5> --note '...'")
+
+
+def run_rate(args: Any) -> None:
+    from .. import lab
+
+    ctx = Context(args)
+    if not 1 <= args.verdict <= 5:
+        raise CliError("verdict must be 1..5")
+    lab_root = lab.lab_dir(ctx.config.path)
+    path, trial = lab.find_trial(lab_root, args.trial_id)
+    trial.verdict = args.verdict
+    trial.note = args.note
+    path.write_text(trial.to_json(), encoding="utf-8")
+    lab.rebuild_index(lab_root)
+    print(f"{trial.voice_name} / {trial.trial_id}: {args.verdict}/5 {args.note}")
+
+
+def run_shortlist(args: Any) -> None:
+    from .. import lab
+
+    ctx = Context(args)
+    rows = lab.shortlist(lab.lab_dir(ctx.config.path), args.use_case, args.language)
+    emit(ctx, rows, table([(r["voice_id"], r["name"], r["verdict"], r["protocols_rated"], ", ".join(f"{k} {v}" for k, v in r["per_protocol"].items())) for r in rows], ("voice_id", "name", "best", "protocols", "per protocol")) if rows else f"no rated trials for {args.use_case}")
+
+
+def run_index(args: Any) -> None:
+    from .. import lab
+
+    ctx = Context(args)
+    index = lab.rebuild_index(lab.lab_dir(ctx.config.path))
+    print(f"{len(index['voices'])} voice(s), {sum(len(v['trials']) for v in index['voices'].values())} trial(s)")

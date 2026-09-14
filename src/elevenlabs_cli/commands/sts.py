@@ -36,7 +36,7 @@ def run(args: Any) -> None:
     duration = audio.probe(path).duration
     confirm_spend(ctx, Spend(None, None, f"converting {duration:.1f} s of audio: billed by input duration"))
     voice_id = resolve_voice(ctx, args.voice, args.language)
-    fmt = ctx.output_format(args.format)
+    fmt = ctx.api_format(args.format, "wav")
     data = api.speech_to_speech(ctx.client, path, voice_id, args.model, fmt, settings_from(args), args.seed, args.remove_noise)
-    audio.decode_api_audio(data, fmt, out, ctx.workdir("sts"))
+    audio.write_api_audio(data, fmt, out, ctx.workdir("sts"), 1)
     report_saved(out)

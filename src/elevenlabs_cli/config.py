@@ -39,12 +39,19 @@ SCHEMA: dict[str, Field] = {
     ),
     "output_dir": Field("optional_path", None, "folder for relative --out paths (null = the current directory)"),
     "default_model": Field("str", "eleven_v3", "model used when --model is absent"),
-    "default_format": Field("str", "mp3_44100_128", "API output format when --format is absent"),
-    "default_lufs": Field("optional_float", None, "loudness target for join (null = no normalisation)"),
+    "default_lufs": Field("optional_float", None, "loudness target per clip in join (null = no normalisation)"),
+    "sample_rate": Field("int", 48000, "the working rate: requested from the API, used for local generation, join and delivery"),
+    "channels": Field("int", 1, "working layout for generated material: 1 (mono speech) or 2; join and mix widen to stereo when an input is stereo"),
     "confirm_above_chars": Field("int", 2000, "generations above this many characters need --yes (0 = always)"),
     "trim_threshold_db": Field("float", -40.0, "silence threshold used by trim and verify"),
     "trim_margin_ms": Field("int", 50, "audio kept on each side of the voiced content when trimming"),
     "verify_tolerance_ms": Field("int", 10, "allowed gap deviation in verify"),
+    "truncation_db": Field("float", -30.0, "a render whose last 30 ms peak above this (or within 20 dB of its own peak) is truncated"),
+    "short_line_chars": Field("int", 60, "lines shorter than this are rendered with short_line_model (v3 randomly cuts their tail)"),
+    "short_line_model": Field("str", "eleven_multilingual_v2", "model for short lines; empty string disables the switch"),
+    "turn_gap_min": Field("float", 0.15, "dialogue: shortest default gap between turns, seconds"),
+    "turn_gap_max": Field("float", 0.45, "dialogue: longest default gap between turns, seconds"),
+    "reference_partner": Field("optional_str", None, "voice id used as the fixed partner in contrast auditions"),
     "voices": Field("voices", {}, "named voices per language: {\"en\": {\"narrator\": \"<voice id>\"}}"),
 }
 
@@ -73,7 +80,7 @@ def coerce(key: str, value: Any) -> Any:
         raise CliError(f"unknown config key '{key}' (known: {', '.join(SCHEMA)})")
     kind = SCHEMA[key].kind
     if kind == "str":
-        if not isinstance(value, str) or not value:
+        if not isinstance(value, str) or (not value and key != "short_line_model"):
             raise CliError(f"config '{key}' must be a non-empty string")
         return value
     if kind == "optional_str":
@@ -150,17 +157,31 @@ def coerce_float(key: str, value: Any) -> float:
     return float(value)
 
 
+API_RATES = (8000, 16000, 22050, 24000, 32000, 44100, 48000)
+
+
+def check_ranges(key: str, value: Any) -> None:
+    """Constraints beyond the type: the API only serves a fixed set of rates, layouts are 1 or 2."""
+    if key == "sample_rate" and value not in API_RATES:
+        raise CliError(f"config 'sample_rate' must be one of {', '.join(str(r) for r in API_RATES)} (the rates ElevenLabs serves), got {value}")
+    if key == "channels" and value not in (1, 2):
+        raise CliError(f"config 'channels' must be 1 or 2, got {value}")
+
+
 def validate(raw: dict[str, Any]) -> dict[str, Any]:
     """Return a complete, typed config; unknown or ill-typed keys raise."""
     if not isinstance(raw, dict):
         raise CliError("config file must contain a JSON object")
     for key in raw:
         if key not in SCHEMA:
-            raise CliError(f"unknown config key '{key}' (known: {', '.join(SCHEMA)})")
+            raise CliError(f"unknown config key '{key}' (known: {', '.join(SCHEMA)}). Remove it, or re-run 'elevenlabs-cli config init --force'.")
     missing = [key for key in SCHEMA if key not in raw]
     if missing:
-        raise CliError(f"config is missing keys: {', '.join(missing)}. Run 'elevenlabs-cli config init' or set them with 'config set'.")
-    return {key: coerce(key, raw[key]) for key in SCHEMA}
+        raise CliError(f"config is missing keys: {', '.join(missing)}. Run 'elevenlabs-cli config init --force' or set them with 'config set'.")
+    values = {key: coerce(key, raw[key]) for key in SCHEMA}
+    for key, value in values.items():
+        check_ranges(key, value)
+    return values
 
 
 class Config:
@@ -197,7 +218,17 @@ class Config:
         return self.values[key]
 
     def set(self, key: str, value: Any) -> None:
-        self.values[key] = coerce(key, value)
+        typed = coerce(key, value)
+        check_ranges(key, typed)
+        self.values[key] = typed
+
+    @property
+    def sample_rate(self) -> int:
+        return self.values["sample_rate"]
+
+    @property
+    def channels(self) -> int:
+        return self.values["channels"]
 
     @property
     def output_dir(self) -> Path | None:

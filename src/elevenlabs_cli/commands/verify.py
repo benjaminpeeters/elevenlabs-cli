@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import audio
-from ..common import Context, emit, table
+from ..common import Context, emit, say, table
 from ..errors import CliError
 
 
@@ -20,7 +20,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.set_defaults(func=run)
 
 
-def expected_from(spec: Path) -> list[float]:
+def expected_from(spec: Path) -> tuple[list[float], list[tuple[float, float]] | None]:
     if not spec.is_file():
         raise CliError(f"spec not found: {spec}")
     if spec.suffix == ".json":
@@ -28,14 +28,20 @@ def expected_from(spec: Path) -> list[float]:
         gaps = data.get("gaps")
         if not isinstance(gaps, list):
             raise CliError(f"{spec} has no 'gaps' list; is it a timing sidecar written by join?")
-        return [float(g["expected"]) for g in gaps]
+        usable = [g for g in gaps if g.get("verifiable", True)]
+        return [float(g["expected"]) for g in usable], [(float(g["start"]), float(g["end"])) for g in usable]
     items = audio.parse_spec_lines(spec.read_text(encoding="utf-8").splitlines(), spec.parent)
-    return [item.silence for item in items if item.silence is not None]
+    return [item.silence for item in items if item.silence is not None], None
 
 
-def check_and_report(ctx: Context, path: Path, expected: list[float], tolerance_ms: int | None = None) -> None:
+def check_and_report(ctx: Context, path: Path, expected: list[float], tolerance_ms: int | None = None, positions: list[tuple[float, float]] | None = None) -> None:
+    if not expected:
+        say("nothing to verify: no silences in the spec")
+        return
     tolerance = tolerance_ms if tolerance_ms is not None else ctx.config.get("verify_tolerance_ms")
-    checks = audio.verify_gaps(path, expected, ctx.config.get("trim_threshold_db"), tolerance)
+    if positions is None:
+        say("no timing sidecar: silences are matched in order, so a long pause inside speech can shift the table; prefer <out>.timing.json")
+    checks = audio.verify_gaps(path, expected, ctx.config.get("trim_threshold_db"), tolerance, positions)
     rows = [
         (c.index + 1, f"{c.expected:.3f}", "missing" if c.measured is None else f"{c.measured:.3f}",
          "" if c.measured is None else f"{(c.measured - c.expected) * 1000:+.1f} ms", "ok" if c.ok else "MISMATCH")
@@ -50,4 +56,5 @@ def check_and_report(ctx: Context, path: Path, expected: list[float], tolerance_
 def run(args: Any) -> None:
     ctx = Context(args)
     path = Path(args.audio).expanduser()
-    check_and_report(ctx, path, expected_from(Path(args.spec).expanduser()), args.tolerance_ms)
+    expected, positions = expected_from(Path(args.spec).expanduser())
+    check_and_report(ctx, path, expected, args.tolerance_ms, positions)

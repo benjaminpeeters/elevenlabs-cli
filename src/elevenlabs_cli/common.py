@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import client as api
-from .config import Config
+from .config import API_RATES, Config
 from .errors import CliError
 
 NEVER_ASK = 100000  # confirm_above_chars at or above this never asks, even for per-call billing
@@ -64,14 +64,43 @@ class Context:
             raise CliError(f"cannot write to {path.parent}: {exc.strerror}; choose another {what} or make that folder writable") from exc
         return path.resolve()
 
-    def output_format(self, override: str | None) -> str:
-        fmt = override or self.config.get("default_format")
-        if fmt not in OUTPUT_FORMATS:
-            raise CliError(f"unknown output format '{fmt}' (known: {', '.join(OUTPUT_FORMATS)})")
-        return fmt
+    def api_format(self, override: str | None, family: str) -> str:
+        """The API output format: ``--format`` as given, else lossless at the working rate.
+
+        ``family`` is ``wav`` for endpoints that offer WAV (speech, dialogue,
+        speech-to-speech) and ``pcm`` for those that only offer raw samples
+        (sound effects, music); raw samples are wrapped into a WAV on write.
+        """
+        if override is not None:
+            if override not in OUTPUT_FORMATS:
+                raise CliError(f"unknown output format '{override}' (known: {', '.join(OUTPUT_FORMATS)})")
+            return override
+        return f"{family}_{self.config.sample_rate}"
+
+    @property
+    def sample_rate(self) -> int:
+        return self.config.sample_rate
+
+    def rate(self, override: int | None) -> int:
+        if override is None:
+            return self.config.sample_rate
+        if override not in API_RATES:
+            raise CliError(f"--rate must be one of {', '.join(str(r) for r in API_RATES)}, got {override}")
+        return override
 
     def model(self, override: str | None) -> str:
         return override or self.config.get("default_model")
+
+    def model_for_text(self, override: str | None, text: str) -> tuple[str, bool]:
+        """The model for one utterance: an explicit --model always wins; otherwise short lines use
+        ``short_line_model`` because v3 randomly cuts their tail (finding v3-short-utterance-truncation).
+        Returns (model, switched)."""
+        if override is not None:
+            return override, False
+        short_model = self.config.get("short_line_model")
+        if short_model and len(text.strip()) < self.config.get("short_line_chars") and short_model != self.config.get("default_model"):
+            return short_model, True
+        return self.config.get("default_model"), False
 
 
 @dataclass(frozen=True)

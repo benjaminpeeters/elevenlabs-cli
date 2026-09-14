@@ -26,7 +26,9 @@ def run(args: Any) -> None:
         raise CliError(f"file not found: {path}")
     out = ctx.resolve_out(args.out)
     duration = audio.probe(path).duration
+    if duration < 4.6:
+        raise CliError(f"{path} is {duration:.1f} s long; isolation needs at least 4.6 s")
     confirm_spend(ctx, Spend(None, None, f"isolating {duration / 60:.1f} min of audio: billed per minute of audio"))
     data = api.isolate(ctx.client, path)
-    audio.decode_api_audio(data, "mp3_44100_128", out, ctx.workdir("isolate"))
+    audio.write_api_audio(data, "mp3_44100_128", out, ctx.workdir("isolate"), 1)
     report_saved(out)

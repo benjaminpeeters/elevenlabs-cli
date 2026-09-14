@@ -31,7 +31,7 @@ def test_validate_items_shape(tmp_path: Path) -> None:
         validate_items([])
     with pytest.raises(CliError, match="start and end with a file"):
         validate_items([JoinItem(silence=1.0), JoinItem(file=str(clip))])
-    with pytest.raises(CliError, match="consecutive silences"):
+    with pytest.raises(CliError, match="consecutive silence/overlap"):
         validate_items([JoinItem(file=str(clip)), JoinItem(silence=1.0), JoinItem(silence=1.0), JoinItem(file=str(clip))])
     with pytest.raises(CliError, match="not found"):
         validate_items([JoinItem(file=str(tmp_path / "missing.wav"))])

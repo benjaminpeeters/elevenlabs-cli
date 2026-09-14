@@ -37,18 +37,21 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--voice", required=True, help="alias from the config, exact voice name, or voice id")
     parser.add_argument("--model", help="default: config default_model")
     parser.add_argument("--language", help="ISO 639-1 code; also selects the alias language")
-    parser.add_argument("--format", help="API output format (default: config default_format)")
+    parser.add_argument("--format", help="API output format (default: wav_<sample_rate>, lossless; mp3_44100_128 for a quick listen)")
     add_voice_settings(parser)
     parser.add_argument("--seed", type=int, help="fixed seed for reproducible delivery (0..4294967295)")
-    parser.add_argument("--out", help="output file; extension picks the container (.mp3 raw, .wav/.m4a/.opus/.flac via ffmpeg)")
+    parser.add_argument("--out", help="output file; .wav keeps the lossless clip, .m4a/.mp3/.opus/.flac transcode")
     parser.add_argument("--dry-run", action="store_true", help="print characters, chunks and credits, generate nothing")
+    parser.add_argument("--allow-truncated", dest="allow_truncated", action="store_true", help="keep a render whose tail the API cut short (warning instead of failure)")
     parser.set_defaults(func=run)
 
 
 def run(args: Any) -> None:
     ctx = Context(args)
     text = read_text_input(args.text, args.file)
-    model = ctx.model(args.model)
+    model, switched = ctx.model_for_text(args.model, text)
+    if switched:
+        say(f"short text: rendered with {model} (v3 randomly cuts the tail of short utterances)")
     info = model_info(model)
     chunks = chunk_text(text, model)
     chars = billable_chars(text)
@@ -59,7 +62,7 @@ def run(args: Any) -> None:
     out = ctx.resolve_out(args.out)
     confirm_spend(ctx, Spend(chars, credits, f"{len(chunks)} request(s) with {model}"))
     voice_id = resolve_voice(ctx, args.voice, args.language)
-    fmt = ctx.output_format(args.format)
+    fmt = ctx.api_format(args.format, "wav")
     settings = settings_from(args)
     workdir = ctx.workdir("tts")
     parts: list[Path] = []
@@ -68,18 +71,19 @@ def run(args: Any) -> None:
         previous_text = chunks[index - 1] if index > 0 and info.stitching else None
         next_text = chunks[index + 1] if index + 1 < len(chunks) and info.stitching else None
         result = api.text_to_speech(
-            ctx.client, voice_id, chunk, model, fmt, args.language, settings, args.seed,
+            ctx.client, voice_id, chunk, model, fmt, args.language if model != "eleven_multilingual_v2" else None, settings, args.seed,
             request_ids[-3:] if info.stitching else None, previous_text, next_text,
         )
         if result.request_id:
             request_ids.append(result.request_id)
-        if len(chunks) == 1:
-            audio.decode_api_audio(result.audio, fmt, out, workdir)
-        else:
-            part = workdir / f"{index:03d}.wav"
-            audio.decode_api_audio(result.audio, fmt, part, workdir / "decode")
-            parts.append(part)
+        part = workdir / f"{index:03d}.wav"
+        audio.write_api_audio(result.audio, fmt, part, workdir / "decode", 1)
+        audio.check_not_truncated(part, ctx.config.get("truncation_db"), f"chunk {index + 1}", args.allow_truncated)
+        parts.append(part)
+        if len(chunks) > 1:
             say(f"chunk {index + 1}/{len(chunks)} done")
-    if len(chunks) > 1:
-        audio.join([audio.JoinItem(file=str(p)) for p in parts], out, workdir / "join", ctx.config.get("trim_threshold_db"), 0, do_trim=False, lufs=None)
+    if len(chunks) == 1:
+        audio.deliver(parts[0], out, ctx.sample_rate, ctx.config.channels)
+    else:
+        audio.join([audio.JoinItem(file=str(p)) for p in parts], out, workdir / "join", ctx.config.get("trim_threshold_db"), 0, do_trim=False, lufs=None, sample_rate=ctx.sample_rate, channels=ctx.config.channels)
     report_saved(out)
