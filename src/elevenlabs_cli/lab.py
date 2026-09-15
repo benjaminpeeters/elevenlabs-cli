@@ -1,6 +1,7 @@
 """The voice lab: trial files, protocol ids, the derived index and shortlists.
 
-Layout, under ``<config dir>/lab``:
+The lab is the config directory itself (``~/.config/elevenlabs-cli``, usually a
+symlink to a private repository), laid out as:
 
 - ``protocols/<use-case>/<name>.txt``: fixed audition scripts; a protocol id is
   ``<use-case>/<name>#<8 hex of the content hash>``, so an edited script is a
@@ -25,7 +26,7 @@ from .errors import CliError
 
 
 def lab_dir(config_path: Path) -> Path:
-    return config_path.parent / "lab"
+    return config_path.parent
 
 
 def slug(text: str) -> str:

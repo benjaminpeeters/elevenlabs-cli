@@ -238,7 +238,7 @@ def test_models_diff() -> None:
 
 def test_audition_dry_run_and_rate_shortlist(config_file: Path, fake_api: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from elevenlabs_cli import lab
-    root = tmp_path / "lab"
+    root = config_file.parent
     (root / "protocols" / "en-dialogue-elderly").mkdir(parents=True)
     (root / "protocols" / "en-dialogue-elderly" / "isolation.txt").write_text("Two winters in Sanaa, back in the nineties. Long before this war.\n")
     assert main(["voices", "audition", "--use-case", "en-dialogue-elderly", "--protocol", "isolation", "--voices", "Amy", "--grid", "default", "--dry-run"]) == 0

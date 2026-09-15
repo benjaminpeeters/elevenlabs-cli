@@ -107,7 +107,7 @@ A script is one line per turn, `Name: text`, optionally starting with `[quick]`,
 
 ## The voice lab
 
-Casting is measured, not guessed. `lab/` next to the config holds fixed audition protocols per use case (`isolation`, `longform`, `contrast`), every rendered trial as audio plus a JSON with voice card, model, SDK version, settings, seed, date and measurements, the user's verdicts, dated findings, and a derived index. `voices audition` renders, `voices rate` records a verdict, `voices shortlist` ranks, `voices index` rebuilds. A trial rated years ago stays comparable with one rendered today on the same protocol.
+Casting is measured, not guessed. The config directory doubles as the lab: it holds fixed audition protocols per use case (`isolation`, `longform`, `contrast`), every rendered trial as audio plus a JSON with voice card, model, SDK version, settings, seed, date and measurements, the user's verdicts, dated findings, and a derived index. `voices audition` renders, `voices rate` records a verdict, `voices shortlist` ranks, `voices index` rebuilds. A trial rated years ago stays comparable with one rendered today on the same protocol.
 
 ## Exact pauses
 
