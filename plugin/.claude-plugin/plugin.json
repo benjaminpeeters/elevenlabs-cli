@@ -1,0 +1,20 @@
+{
+  "name": "elevenlabs",
+  "version": "0.1.0",
+  "description": "Audio generation with ElevenLabs, driven through the elevenlabs-cli command: text to speech in any language, multi-speaker dialogue with natural turn-taking, guided pieces rendered as one take and re-timed to exact pauses, sound effects, local noise beds, transcription, and a measured voice-casting funnel with a persistent trial lab. Four skills: generate (automatic), casting, check-updates and improve (invoked by name), plus setup.",
+  "author": {
+    "name": "Benjamin Peeters",
+    "url": "https://github.com/benjaminpeeters"
+  },
+  "homepage": "https://github.com/benjaminpeeters/elevenlabs-cli",
+  "license": "MIT",
+  "keywords": [
+    "elevenlabs",
+    "tts",
+    "text-to-speech",
+    "audio",
+    "voiceover",
+    "dialogue",
+    "transcription"
+  ]
+}

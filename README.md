@@ -161,6 +161,18 @@ elevenlabs-cli tts --language zh --voice 老师 --text "今天我们学习三个
 
 The CLI is designed to be driven by scripts and agent skills: every failure is a clear message and a non-zero exit, estimates go to stderr, `--json` gives structured output, `config show` exposes the limits the agent must respect, and `confirm_above_chars` is the one knob that decides how much it may spend without asking. A skill only needs to read the config, obey the threshold, never invent voice ids, and report the saved path.
 
+### The Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace, so one install brings the CLI and the skills that drive it:
+
+```
+/plugin marketplace add benjaminpeeters/elevenlabs-cli
+/plugin install elevenlabs@elevenlabs-cli
+/elevenlabs:setup
+```
+
+`/elevenlabs:setup` installs the CLI from the copy the marketplace just cloned, writes the configuration, and seeds the voice lab with default audition protocols. After that, asking Claude Code for a voiceover, a dialogue or a guided piece uses this tool, with its spend guard intact; `/elevenlabs:casting` picks voices by measurement, `/elevenlabs:check-updates` tracks what changes at ElevenLabs, and `/elevenlabs:improve` maintains the whole thing. Details in `plugin/README.md`.
+
 ## Development
 
 ```sh

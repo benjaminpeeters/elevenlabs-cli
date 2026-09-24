@@ -1,0 +1,19 @@
+{
+  "name": "elevenlabs-cli",
+  "owner": {
+    "name": "Benjamin Peeters",
+    "url": "https://github.com/benjaminpeeters/elevenlabs-cli"
+  },
+  "metadata": {
+    "description": "The elevenlabs-cli tool and the Claude Code plugin that drives it. Installing the plugin from this marketplace also brings the CLI source, so one clone provides both.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "elevenlabs",
+      "source": "./plugin",
+      "description": "Generate audio with ElevenLabs from Claude Code: speech in any language, multi-speaker dialogue, guided pieces with exact pauses, sound effects, noise beds, transcription, and a measured voice-casting workflow. Drives the elevenlabs-cli command, which this repository provides.",
+      "category": "productivity"
+    }
+  ]
+}
