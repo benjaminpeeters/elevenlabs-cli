@@ -54,6 +54,7 @@ elevenlabs-cli config set voices.en.narrator 21m00Tcm4TlvDq8ikWAM
 | `voices get <voice>` / `voices delete <id>` | details / remove | free |
 | `tts --text ... --voice V --out f.wav` | speech, lossless at the working rate, chunked under the model limit | characters |
 | `clips --file lines.txt --voice V --out-dir DIR` | one trimmed clip per line plus `manifest.json` | characters |
+| `piece --file script.txt --voice V --out piece.m4a` | a timed script (`[pause 2.5]` lines) as one take, cut at its pauses and re-timed exactly | characters |
 | `dialogue --file script.txt --speaker "Ann=V1" --speaker "Bob=V2,model=eleven_multilingual_v2,speed=0.9" --out d.wav` | multi-speaker with natural turn-taking (per turn, segments, or single request) | characters |
 | `voices audition --use-case UC --protocol isolation --voices V... --grid default` | render candidates on a fixed protocol into the voice lab; `voices rate`, `voices shortlist`, `voices index` | characters per trial |
 | `sfx --text "rain on a tent" --duration 10 --out rain.wav` | sound effect | per generation |
@@ -129,7 +130,17 @@ elevenlabs-cli join a.wav silence:3 b.wav --out settle.m4a
 # 1    3.000       3.001       +1.2 ms  ok
 ```
 
-A spec file works too (`--spec`): lines `file <path>` and `silence <seconds>`, paths relative to the file.
+A spec file works too (`--spec`): lines `file <path>` and `silence <seconds>`, paths relative to the file. A silence before the first file or after the last one is a lead-in or a tail of the piece, verified like any gap.
+
+### One take, exact pauses
+
+Rendering every utterance as its own request gives exact timing but a new tone and a new room tone at every cut. `piece` renders a timed script (text lines and `[pause 2.5]` lines) as **one request**, asks the API for the character alignment, cuts the take at the silence the model left after each line, and reassembles the lines with the script's exact silences through `join`. v2-class models get an SSML break at every pause so the model leaves one; v3-class models get a paragraph per line and a sacrificial closing sentence that absorbs the tail cut. A pause the model did not leave is an error, never a cut inside speech.
+
+```sh
+elevenlabs-cli piece --file nidra.txt --voice narrator --model eleven_multilingual_v2 --seed 7 --lufs -25 --out nidra.m4a
+```
+
+`--lufs` normalises the whole take before cutting, so the voice's own dynamics between lines survive; `--clips-dir` keeps the cut lines with a manifest. The whole script must fit one request (10,000 characters on v2, 5,000 on v3).
 
 Two ways to deliver timing, on the same trimmed clips:
 

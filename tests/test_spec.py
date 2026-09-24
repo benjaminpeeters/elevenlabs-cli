@@ -29,8 +29,11 @@ def test_validate_items_shape(tmp_path: Path) -> None:
     clip.write_bytes(b"")
     with pytest.raises(CliError, match="empty"):
         validate_items([])
-    with pytest.raises(CliError, match="start and end with a file"):
-        validate_items([JoinItem(silence=1.0), JoinItem(file=str(clip))])
+    validate_items([JoinItem(silence=1.0), JoinItem(file=str(clip)), JoinItem(silence=0.5)])  # a lead-in and a tail are fine
+    with pytest.raises(CliError, match="at least one file"):
+        validate_items([JoinItem(silence=1.0)])
+    with pytest.raises(CliError, match="cannot start or end with an overlap"):
+        validate_items([JoinItem(overlap=0.2), JoinItem(file=str(clip))])
     with pytest.raises(CliError, match="consecutive silence/overlap"):
         validate_items([JoinItem(file=str(clip)), JoinItem(silence=1.0), JoinItem(silence=1.0), JoinItem(file=str(clip))])
     with pytest.raises(CliError, match="not found"):

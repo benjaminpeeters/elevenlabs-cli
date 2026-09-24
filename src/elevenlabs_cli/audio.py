@@ -374,8 +374,10 @@ def parse_seconds(text: str, where: str, allow_zero: bool = False) -> float:
 def validate_items(items: list[JoinItem]) -> None:
     if not items:
         raise CliError("join spec is empty")
-    if items[0].file is None or items[-1].file is None:
-        raise CliError("a join spec must start and end with a file")
+    if not any(item.file is not None for item in items):
+        raise CliError("a join spec needs at least one file")
+    if items[0].overlap is not None or items[-1].overlap is not None:
+        raise CliError("a join spec cannot start or end with an overlap (a leading or trailing silence is fine)")
     for previous, current in zip(items, items[1:]):
         if previous.file is None and current.file is None:
             raise CliError("two consecutive silence/overlap entries in the join spec; merge them into one")
@@ -433,7 +435,8 @@ def join(
             info = TrimResult(item.file, str(wav), 0.0, duration, 0.0, 0.0, duration)
         clips_raw.append((index, item, info))
 
-    # 2. the signed gap before each clip (None for the first): +N silence, -N overlap
+    # 2. the signed gap before each clip (None for the first): +N silence, -N overlap;
+    #    a silence before the first clip or after the last one is a lead-in or a tail of the piece
     gaps_before: list[float | None] = [None]
     for k in range(1, len(clips_raw)):
         between = items[clips_raw[k - 1][0] + 1:clips_raw[k][0]]
@@ -443,15 +446,21 @@ def join(
             gaps_before.append(between[0].silence)
         else:
             gaps_before.append(-float(between[0].overlap or 0.0))
+    head = items[:clips_raw[0][0]]
+    tail = items[clips_raw[-1][0] + 1:]
+    leading = head[0].silence if head else None
+    trailing = tail[0].silence if tail else None
 
     # 3. effective margins: a tight gap shrinks the quiet margins on both sides to fit
     leads: list[float] = []
     trails: list[float] = []
     for k, (_, _, info) in enumerate(clips_raw):
-        g_before = gaps_before[k]
-        g_after = gaps_before[k + 1] if k + 1 < len(clips_raw) else None
-        lead = info.kept_leading if g_before is None or g_before < 0 else min(info.kept_leading, g_before / 2)
-        trail = info.kept_trailing if g_after is None or g_after < 0 else min(info.kept_trailing, g_after / 2)
+        g_before = gaps_before[k] if k > 0 else leading
+        g_after = gaps_before[k + 1] if k + 1 < len(clips_raw) else trailing
+        share = 2 if k > 0 else 1  # an inner gap is shared with the neighbour; a lead-in belongs to this clip alone
+        lead = info.kept_leading if g_before is None or g_before < 0 else min(info.kept_leading, g_before / share)
+        share = 2 if k + 1 < len(clips_raw) else 1
+        trail = info.kept_trailing if g_after is None or g_after < 0 else min(info.kept_trailing, g_after / share)
         leads.append(lead)
         trails.append(trail)
 
@@ -465,7 +474,7 @@ def join(
         cut_end = info.duration - (info.kept_trailing - trails[k])
         duration = cut_end - cut_start
         if k == 0:
-            offset = 0.0
+            offset = 0.0 if leading is None else leading - leads[0]
         else:
             prev = placed[-1]
             g = gaps_before[k]
@@ -478,6 +487,8 @@ def join(
         voiced_start = offset + leads[k]
         voiced_end = offset + duration - trails[k]
         clip = PlacedClip(info.source, offset, offset + duration, leads[k], trails[k], voiced_start, voiced_end, item.label)
+        if k == 0 and leading is not None:
+            gaps.append(ExpectedGap(0.0, voiced_start, leading, verifiable=item.fade == 0))
         if k > 0:
             g = gaps_before[k]
             assert g is not None
@@ -489,6 +500,10 @@ def join(
                 overlaps.append(Overlap(k - 1, voiced_start, prev.voiced_end, -g))
         placed.append(clip)
         offsets.append(offset)
+    total: float | None = None
+    if trailing is not None:
+        total = placed[-1].voiced_end + trailing
+        gaps.append(ExpectedGap(placed[-1].voiced_end, total, trailing, verifiable=clips_raw[-1][1].fade == 0))
 
     # 5. the ffmpeg graph: per clip cut in samples, edge fades, delay in samples; one sum
     inputs: list[str] = []
@@ -508,7 +523,10 @@ def join(
             f"afade=t=in:ss=0:ns={fade_in},afade=t=out:ss={n - fade_out}:ns={fade_out},"
             f"adelay=delays={delay}S:all=1[c{k}]"
         )
-    chains.append("".join(f"[c{k}]" for k in range(len(clips_raw))) + f"amix=inputs={len(clips_raw)}:normalize=0:duration=longest[out]")
+    summed_label = "[sum]" if total is not None else "[out]"
+    chains.append("".join(f"[c{k}]" for k in range(len(clips_raw))) + f"amix=inputs={len(clips_raw)}:normalize=0:duration=longest{summed_label}")
+    if total is not None:
+        chains.append(f"[sum]apad=whole_len={int(round(total * sample_rate))}[out]")  # the trailing silence, exact in samples
     graph = workdir / "graph.txt"
     graph.write_text(";\n".join(chains) + "\n", encoding="utf-8")
     summed = workdir / "joined.wav"
@@ -811,6 +829,62 @@ def cut_line_by_alignment(
     end = boundary_after(source, char_end, next_start, threshold_db, search)
     cut_span(source, output, start, end, sample_rate, channels)
     return start, end
+
+
+def cut_lines_by_alignment(
+    source: Path,
+    spans: list[tuple[int, int]],
+    starts: list[float],
+    ends: list[float],
+    threshold_db: float,
+    sample_rate: int,
+    channels: int,
+    workdir: Path,
+    lead: float = 0.05,
+    min_pause: float = 0.04,
+) -> list[Path]:
+    """Cut every line of one take into its own clip, at the pauses between the lines.
+
+    ``spans`` are the (first, last) character indexes of each line in the
+    alignment. A line ends 30 ms into the first silence (below ``threshold_db``,
+    at least ``min_pause``) that reaches past its last character and begins
+    before the next line's first character; it starts ``lead`` seconds before
+    its first character, never inside the previous clip. No such silence means
+    the model ran two lines together, which is an error: a cut inside speech
+    is never made. The last line runs to the end of the take (or to the
+    silence before a sacrificial tail). Returns ``001.wav``, ``002.wav``...
+    """
+    if not spans:
+        raise CliError("no lines to cut")
+    for first, last in spans:
+        if not 0 <= first <= last < len(ends):
+            raise CliError(f"alignment has {len(ends)} characters, span {first}..{last} is out of range")
+    duration = probe(source).duration
+    silences = detect_silences(source, threshold_db, min_pause)
+    workdir.mkdir(parents=True, exist_ok=True)
+    clips: list[Path] = []
+    previous_end = 0.0
+    for index, (first, last) in enumerate(spans):
+        char_start = starts[first]
+        char_end = ends[last]
+        next_char = starts[spans[index + 1][0]] if index + 1 < len(spans) else duration
+        pauses = [g for g in silences if g.end > char_end and g.start < next_char]
+        if pauses:
+            end = min(pauses[0].start + 0.03, next_char)
+        elif index + 1 < len(spans):
+            raise CliError(
+                f"no pause between line {index + 1} and line {index + 2}: the model ran them together "
+                f"(nothing under {threshold_db:g} dB for {min_pause * 1000:.0f} ms between {char_end:.2f} s and {next_char:.2f} s). "
+                "Give the line a full stop, a break or a paragraph of its own and render again."
+            )
+        else:
+            end = duration
+        start = max(previous_end, char_start - lead)
+        clip = workdir / f"{index + 1:03d}.wav"
+        cut_span(source, clip, start, end, sample_rate, channels)
+        clips.append(clip)
+        previous_end = end
+    return clips
 
 
 def boundary_after(source: Path, spoken_end: float, next_start: float, threshold_db: float, search: float = 0.6) -> float:

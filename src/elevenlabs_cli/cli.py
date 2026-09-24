@@ -7,7 +7,7 @@ import sys
 from typing import Callable, Sequence
 
 from . import __version__
-from .commands import account, clips, config_cmd, dialogue, isolate, join, measure, mix, music, noise, sfx, stt, sts, tts, verify, voice, voices
+from .commands import account, clips, config_cmd, dialogue, isolate, join, measure, mix, music, noise, piece, sfx, stt, sts, tts, verify, voice, voices
 from .errors import CliError
 
 REGISTRARS: list[Callable[[argparse._SubParsersAction], None]] = [
@@ -20,6 +20,7 @@ REGISTRARS: list[Callable[[argparse._SubParsersAction], None]] = [
     mix.register,
     measure.register,
     clips.register,
+    piece.register,
     dialogue.register,
     sfx.register,
     noise.register,

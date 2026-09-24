@@ -396,6 +396,64 @@ def test_cut_span(tmp_path: Path) -> None:
 
 
 @needs_ffmpeg
+def test_join_leading_and_trailing_silence(tmp_path: Path) -> None:
+    a = tmp_path / "a.wav"
+    tone(a, 0.5, 0.2, 0.2)
+    items = audio.parse_spec_args(["silence:1.5", str(a), "silence:2", str(a), "silence:0.8"])
+    out = tmp_path / "out.wav"
+    timing = audio.join(items, out, tmp_path / "work", -40.0, 50, True, None, RATE, None)
+    assert [g.expected for g in timing.gaps] == [1.5, 2.0, 0.8]
+    assert timing.gaps[0].start == 0.0 and abs(timing.gaps[0].end - 1.5) < 0.002
+    assert abs(timing.duration - (1.5 + 0.5 + 2.0 + 0.5 + 0.8)) < 0.03
+    assert all(c.ok for c in gaps_ok(out, timing)), gaps_ok(out, timing)
+    with pytest.raises(CliError, match="overlap"):
+        audio.validate_items(audio.parse_spec_args(["overlap:0.2", str(a)]))
+
+
+def three_tones(path: Path, gap_between: float, trailing: float = 0.2) -> None:
+    """Tone 0.8 s, a gap, tone 0.5 s, a gap, tone 0.4 s, then ``trailing`` silence."""
+    g = f"anullsrc=r={RATE}:cl=mono:d={gap_between}" if gap_between > 0 else None
+    parts = [f"sine=f=440:r={RATE}:d=0.8[a]"]
+    chain = "[a]"
+    n = 1
+    for tone_d, label in ((0.5, "b"), (0.4, "c")):
+        if g:
+            parts.append(f"{g}[g{label}]")
+            chain += f"[g{label}]"
+            n += 1
+        parts.append(f"sine=f=330:r={RATE}:d={tone_d}[{label}]")
+        chain += f"[{label}]"
+        n += 1
+    parts.append(f"anullsrc=r={RATE}:cl=mono:d={trailing}[t]")
+    chain += "[t]"
+    n += 1
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", ";".join(parts) + f";{chain}concat=n={n}:v=0:a=1", "-c:a", "pcm_s16le", str(path)],
+        check=True,
+    )
+
+
+@needs_ffmpeg
+def test_cut_lines_by_alignment_cuts_at_the_pauses(tmp_path: Path) -> None:
+    src = tmp_path / "take.wav"
+    three_tones(src, 0.3)  # tones at 0..0.8, 1.1..1.6, 1.9..2.3
+    # 6 fake characters per line; alignment ends a little early, next starts a little late, as real ones do
+    starts = [0.0, 0.2, 0.4, 0.6, 1.15, 1.3, 1.45, 1.5, 1.95, 2.05, 2.15, 2.2]
+    ends = [0.2, 0.4, 0.6, 0.75, 1.3, 1.45, 1.5, 1.55, 2.05, 2.15, 2.2, 2.25]
+    spans = [(0, 3), (4, 7), (8, 11)]
+    clips = audio.cut_lines_by_alignment(src, spans, starts, ends, -40.0, RATE, 1, tmp_path / "lines")
+    assert [p.name for p in clips] == ["001.wav", "002.wav", "003.wav"]
+    durations = [audio.probe(p).duration for p in clips]
+    assert 0.80 <= durations[0] <= 0.90 and 0.50 <= durations[1] <= 0.62 and 0.40 <= durations[2] <= 0.65
+    for p in clips:
+        assert not audio.tail_level(p).truncated(-30.0)
+    glued = tmp_path / "glued.wav"
+    three_tones(glued, 0.0)  # no pause at all between the lines
+    with pytest.raises(CliError, match="no pause between line 1 and line 2"):
+        audio.cut_lines_by_alignment(glued, spans, starts, ends, -40.0, RATE, 1, tmp_path / "lines2")
+
+
+@needs_ffmpeg
 def test_cut_line_by_alignment_ends_in_the_silence_after_the_line(tmp_path: Path) -> None:
     """Line = tone 0..0.8 s, then 0.3 s of silence, then a filler tone; the alignment claims the
     last character ends at 0.70 (early, as real alignments do) and the filler starts at 1.20 (late)."""
