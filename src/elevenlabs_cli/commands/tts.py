@@ -8,7 +8,7 @@ from typing import Any
 
 from .. import audio
 from .. import client as api
-from ..common import Context, Spend, confirm_spend, read_text_input, report_saved, resolve_voice, say
+from ..common import Context, Spend, add_denoise_args, confirm_spend, read_text_input, report_saved, resolve_voice, say
 from ..cost import billable_chars, chunk_text, estimate_credits, model_info
 
 
@@ -43,6 +43,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--out", help="output file; .wav keeps the lossless clip, .m4a/.mp3/.opus/.flac transcode")
     parser.add_argument("--dry-run", action="store_true", help="print characters, chunks and credits, generate nothing")
     parser.add_argument("--allow-truncated", dest="allow_truncated", action="store_true", help="keep a render whose tail the API cut short (warning instead of failure)")
+    add_denoise_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -56,8 +57,9 @@ def run(args: Any) -> None:
     chunks = chunk_text(text, model)
     chars = billable_chars(text)
     credits = estimate_credits(text, model)
+    denoising = ctx.prepare_denoiser(args.dry_run)
     if args.dry_run:
-        print(f"model: {model}\ncharacters: {chars}\nchunks: {len(chunks)} (limit {info.max_chars})\ncredits: {credits:g}")
+        print(f"model: {model}\ncharacters: {chars}\nchunks: {len(chunks)} (limit {info.max_chars})\ncredits: {credits:g}\ndenoise: {denoising}")
         return
     out = ctx.resolve_out(args.out)
     confirm_spend(ctx, Spend(chars, credits, f"{len(chunks)} request(s) with {model}"))
@@ -77,7 +79,7 @@ def run(args: Any) -> None:
         if result.request_id:
             request_ids.append(result.request_id)
         part = workdir / f"{index:03d}.wav"
-        audio.write_api_audio(result.audio, fmt, part, workdir / "decode", 1)
+        ctx.write_speech(result.audio, fmt, part, workdir / "decode")
         audio.check_not_truncated(part, ctx.config.get("truncation_db"), f"chunk {index + 1}", args.allow_truncated)
         parts.append(part)
         if len(chunks) > 1:

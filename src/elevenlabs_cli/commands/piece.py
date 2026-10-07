@@ -17,7 +17,7 @@ from typing import Any
 
 from .. import audio, script
 from .. import client as api
-from ..common import Context, Spend, confirm_spend, read_text_input, report_saved, resolve_voice, say
+from ..common import Context, Spend, add_denoise_args, confirm_spend, read_text_input, report_saved, resolve_voice, say
 from ..cost import billable_chars, estimate_credits, model_info
 from ..errors import CliError
 from .join import sidecar_path
@@ -47,6 +47,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--out", help="output file (.wav, .m4a, .mp3, .opus, .flac); <out>.timing.json is written next to it")
     parser.add_argument("--dry-run", action="store_true", help="print lines, pauses, characters and credits, spend nothing")
     parser.add_argument("--allow-truncated", dest="allow_truncated", action="store_true", help="keep a line whose tail the API cut short")
+    add_denoise_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -62,8 +63,9 @@ def run(args: Any) -> None:
         raise CliError(f"the script is {len(full)} characters in one request, above the {info.max_chars} limit of {model}; split it into shorter pieces or use a model with a higher limit")
     chars = billable_chars(full)
     credits = estimate_credits(full, model)
+    denoising = ctx.prepare_denoiser(args.dry_run)
     if args.dry_run:
-        print(f"model: {model}\nlines: {len(lines)}\npauses: {len(pauses)} ({sum(p.seconds for p in pauses):g} s)\ncharacters: {chars}\nrequests: 1\ncredits: {credits:g}")
+        print(f"model: {model}\nlines: {len(lines)}\npauses: {len(pauses)} ({sum(p.seconds for p in pauses):g} s)\ncharacters: {chars}\nrequests: 1\ncredits: {credits:g}\ndenoise: {denoising}")
         return
     out = ctx.resolve_out(args.out)
     confirm_spend(ctx, Spend(chars, credits, f"1 request with {model}, {len(lines)} lines"))
@@ -74,7 +76,7 @@ def run(args: Any) -> None:
     language = args.language if model != "eleven_multilingual_v2" else None
     result = api.text_to_speech_timed(ctx.client, voice_id, full, model, fmt, language, settings, args.seed, None, None)
     raw = workdir / "take_raw.wav"
-    audio.write_api_audio(result.audio, fmt, raw, workdir / "decode", 1)
+    ctx.write_speech(result.audio, fmt, raw, workdir / "decode")
     if result.alignment is None:
         raise CliError("the API returned no alignment for the take; cannot cut it at the pauses")
     lufs = args.lufs if args.lufs is not None else ctx.config.get("default_lufs")

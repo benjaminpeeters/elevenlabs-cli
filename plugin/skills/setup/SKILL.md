@@ -18,7 +18,7 @@ elevenlabs-cli --version; python3 --version; uv --version; pipx --version; ffmpe
 - `elevenlabs-cli` already present: skip to step 3, and say which version answered.
 - Python 3.10 or newer is required.
 - `uv` or `pipx` is required to install the tool cleanly. If neither is present, say so and let the user choose: `uv` is the faster option (`curl -LsSf https://astral.sh/uv/install.sh | sh`), `pipx` the one most distributions package. Do not install a package manager without asking.
-- ffmpeg is required for everything except plain `tts` to an MP3: trimming, `piece`, `join`, `verify`, `clips`, `mix`, `measure`, `noise`. Name the distribution package rather than installing it yourself.
+- ffmpeg is required for everything: speech renders are denoised by default, which decodes and re-encodes them, and trimming, `piece`, `join`, `verify`, `clips`, `mix`, `measure` and `noise` use it too. Name the distribution package rather than installing it yourself.
 
 ## 2. Install the CLI
 
@@ -61,6 +61,8 @@ cp -rn "$CLAUDE_PLUGIN_ROOT/assets/protocols/." "<config dir>/protocols/"
 The defaults cover calm guided content (yoga nidra, meditation, breathing), explanatory narration, an elderly-voice dialogue, a French explainer and a Mandarin greeting. Each use case has `isolation.txt`, `longform.txt` and `contrast.txt`. Say which ones landed, and that `/elevenlabs:casting` writes trials, ratings and findings into the same directory.
 
 If the user keeps the lab in version control, mention that `screen/` (downloaded previews) and `index.json` (derived) are the two things worth ignoring.
+
+Speech is denoised by default with a DPDFNet model the CLI downloads on first use (10 MB) into `model_cache_dir` (default `$XDG_CACHE_HOME` or `~/.cache`, then `elevenlabs-cli/models`). In a sandboxed agent session that folder is usually not writable: say so, and let the user choose between `/add-dir` on it for the session and `config set model_cache_dir <a writable folder>`.
 
 ## 5. Check it works
 

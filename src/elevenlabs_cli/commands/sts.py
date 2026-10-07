@@ -8,7 +8,7 @@ from typing import Any
 
 from .. import audio
 from .. import client as api
-from ..common import Context, Spend, confirm_spend, report_saved, resolve_voice
+from ..common import Context, Spend, add_denoise_args, confirm_spend, report_saved, resolve_voice
 from ..errors import CliError
 from .tts import add_voice_settings, settings_from
 
@@ -24,6 +24,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--remove-noise", dest="remove_noise", action="store_true")
     parser.add_argument("--out")
+    add_denoise_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -34,9 +35,10 @@ def run(args: Any) -> None:
         raise CliError(f"file not found: {path}")
     out = ctx.resolve_out(args.out)
     duration = audio.probe(path).duration
+    ctx.prepare_denoiser(dry_run=False)
     confirm_spend(ctx, Spend(None, None, f"converting {duration:.1f} s of audio: billed by input duration"))
     voice_id = resolve_voice(ctx, args.voice, args.language)
     fmt = ctx.api_format(args.format, "wav")
     data = api.speech_to_speech(ctx.client, path, voice_id, args.model, fmt, settings_from(args), args.seed, args.remove_noise)
-    audio.write_api_audio(data, fmt, out, ctx.workdir("sts"), 1)
+    ctx.write_speech(data, fmt, out, ctx.workdir("sts"))
     report_saved(out)

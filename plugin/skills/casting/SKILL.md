@@ -27,7 +27,7 @@ After each stage: `voices shortlist --use-case <uc>` shows the standing. Remove 
 
 ## What to measure besides the verdict
 
-Every trial file already records loudness, true peak, range, characters per second and tail level. Two of those are casting criteria in their own right, so read them out to the user rather than leaving them in the file: characters per second says whether the voice can hold the pace the content needs, since `--speed` moves it only slightly; and the room-tone floor says how clean the voice is, which decides whether its renders will ever need denoising. A clean voice beats a denoised one.
+Every trial file already records loudness, true peak, range, characters per second and tail level. Two of those are casting criteria in their own right, so read them out to the user rather than leaving them in the file: characters per second says whether the voice can hold the pace the content needs, since `--speed` moves it only slightly; and the room-tone floor says how clean the voice is. Trials are denoised like every speech render, so they sound as the voice will ship and the floor in the trial file is the floor after denoising; to judge a voice's own noise, render one trial with `--no-denoise`.
 
 ## Costs, for the ask before each stage
 

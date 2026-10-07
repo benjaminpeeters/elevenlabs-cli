@@ -9,41 +9,7 @@ import pytest
 from elevenlabs_cli import audio as audio_mod
 from elevenlabs_cli import client as api
 from elevenlabs_cli.cli import main
-from tests.conftest import set_config
-
-MP3_BYTES = b"RIFFfake-wav-bytes"
-
-
-@pytest.fixture
-def fake_api(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    calls: dict[str, Any] = {"tts": []}
-    monkeypatch.setattr(api, "make_client", lambda key: object())
-    monkeypatch.setattr(api, "my_voices", lambda client, search=None: [
-        {"voice_id": "id_amy", "name": "Amy", "category": "premade", "labels": {"gender": "female"}},
-        {"voice_id": "id_dup1", "name": "Dup", "category": "cloned", "labels": {}},
-        {"voice_id": "id_dup2", "name": "Dup", "category": "cloned", "labels": {}},
-    ])
-
-    def tts(client: Any, voice_id: str, text: str, model_id: str, output_format: str, language: Any, settings: Any, seed: Any, prev_ids: Any, prev_text: Any, next_text: Any) -> api.TtsResult:
-        calls["tts"].append({"voice_id": voice_id, "text": text, "model": model_id, "seed": seed, "prev_ids": prev_ids, "language": language, "format": output_format})
-        return api.TtsResult(MP3_BYTES, f"req{len(calls['tts'])}")
-
-    monkeypatch.setattr(api, "text_to_speech", tts)
-
-    def tts_timed(client: Any, voice_id: str, text: str, model_id: str, output_format: str, language: Any, settings: Any, seed: Any, prev_text: Any, next_text: Any) -> api.TimedResult:
-        calls["tts"].append({"voice_id": voice_id, "text": text, "model": model_id, "seed": seed, "prev_ids": None, "language": language, "format": output_format, "timed": True})
-        n = len(text)
-        return api.TimedResult(MP3_BYTES, api.Alignment(list(text), [i * 0.05 for i in range(n)], [(i + 1) * 0.05 for i in range(n)]), [])
-
-    monkeypatch.setattr(api, "text_to_speech_timed", tts_timed)
-    monkeypatch.setattr(audio_mod, "cut_line_by_alignment", lambda src, out, *a, **k: out.write_bytes(src.read_bytes()) or (0.0, 1.0))
-    monkeypatch.setattr(audio_mod, "check_not_truncated", lambda path, db, label, allow: audio_mod.TailLevel(-3.0, -20.0, -40.0, -50.0))
-    monkeypatch.setattr(api, "subscription", lambda client: {
-        "tier": "creator", "status": "active", "character_count": 1200, "character_limit": 100000,
-        "next_character_count_reset_unix": 1800000000, "voice_slots_used": 3, "voice_limit": 30,
-        "can_use_instant_voice_cloning": True, "can_use_professional_voice_cloning": False,
-    })
-    return calls
+from tests.conftest import MP3_BYTES, set_config
 
 
 def test_tts_writes_lossless_clip_and_reports_path(config_file: Path, fake_api: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

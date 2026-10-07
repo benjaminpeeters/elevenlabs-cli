@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import audio
 from .. import client as api
-from ..common import Context, Spend, confirm_spend, read_text_input, report_saved, resolve_voice, say
+from ..common import Context, Spend, add_denoise_args, confirm_spend, read_text_input, report_saved, resolve_voice, say
 from ..cost import billable_chars, estimate_credits, model_info
 from ..errors import CliError
 from .tts import add_voice_settings, settings_from
@@ -34,6 +34,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--out-dir", required=True, help="folder for the clips and manifest.json")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-truncated", dest="allow_truncated", action="store_true", help="keep renders whose tail the API cut short")
+    add_denoise_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -52,8 +53,9 @@ def run(args: Any) -> None:
     credits = sum(estimate_credits(u, m) for u, (m, _) in zip(utterances, models))
     switched = sum(1 for _, sw in models if sw)
     summary = f"utterances: {len(utterances)} ({switched} short, rendered with {ctx.config.get('short_line_model')})" if switched else f"utterances: {len(utterances)}"
+    denoising = ctx.prepare_denoiser(args.dry_run)
     if args.dry_run:
-        print(f"model: {ctx.model(args.model)}\n{summary}\ncharacters: {chars}\ncredits: {credits:g}")
+        print(f"model: {ctx.model(args.model)}\n{summary}\ncharacters: {chars}\ncredits: {credits:g}\ndenoise: {denoising}")
         return
     model = ctx.model(args.model)
     audio.delivery_args(args.ext, 1)  # validates the extension early
@@ -71,7 +73,7 @@ def run(args: Any) -> None:
         line_model, _ = models[index - 1]
         result = api.text_to_speech(ctx.client, voice_id, utterance, line_model, fmt, args.language if line_model != "eleven_multilingual_v2" else None, settings, args.seed, None, None, None)
         raw = workdir / f"{index:03d}_raw.wav"
-        audio.write_api_audio(result.audio, fmt, raw, workdir / "decode", 1)
+        ctx.write_speech(result.audio, fmt, raw, workdir / "decode")
         tail = audio.check_not_truncated(raw, ctx.config.get("truncation_db"), f"line {index} ({utterance[:40]!r})", args.allow_truncated)
         trimmed_wav = workdir / f"{index:03d}_trim.wav"
         trimmed = audio.trim(raw, trimmed_wav, threshold, margin, ctx.sample_rate, ctx.config.channels, ctx.config.get("default_lufs"))

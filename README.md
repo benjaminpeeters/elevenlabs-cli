@@ -6,7 +6,7 @@ Why a CLI and not the MCP server: the hosted MCP keeps only text-to-speech and t
 
 ## Install
 
-Requires Python 3.10+ and, for `trim`/`join`/`verify`/`clips` and any non-MP3 output, [ffmpeg](https://ffmpeg.org/).
+Requires Python 3.10+ and, for `trim`/`join`/`verify`/`clips`, denoising and any non-MP3 output, [ffmpeg](https://ffmpeg.org/). numpy and onnxruntime come with the package (speech denoising).
 
 ```sh
 uv tool install git+https://github.com/benjaminpeeters/elevenlabs-cli   # or: pipx install ...
@@ -39,6 +39,9 @@ elevenlabs-cli config set voices.en.narrator 21m00Tcm4TlvDq8ikWAM
 | `short_line_chars` / `short_line_model` | 60 / `eleven_multilingual_v2` | short lines render on a model that does not truncate |
 | `turn_gap_min` / `turn_gap_max` | 0.15 / 0.45 | default range of dialogue turn gaps, seconds |
 | `reference_partner` | null | voice id of the fixed partner in contrast auditions |
+| `denoise` | true | denoise every speech render with DPDFNet (`--no-denoise` skips it once) |
+| `denoise_model` | `dpdfnet2_48khz_hr` | `dpdfnet8_48khz_hr` (alias `8`) is about 4x slower, with no audible gain measured |
+| `model_cache_dir` | null | where the denoise models are downloaded; null = `$XDG_CACHE_HOME` or `~/.cache`, then `elevenlabs-cli/models` |
 | `voices` | `{}` | `{"en": {"narrator": "<voice id>"}}` aliases per language |
 
 ## Commands
@@ -97,6 +100,10 @@ Long text is split under the limit: by paragraph for v3 (each request stands on 
 Everything works at `sample_rate` (48 kHz by default). Speech and dialogue are requested from the API as `wav_48000`, sound effects and music as `pcm_48000` wrapped into a WAV, local noise and silence are generated at it, and `join` and `mix` convert any foreign input (a 44.1 kHz recording, a 192 kHz bed) exactly once. Intermediates are 24-bit WAV. The container of the final file follows the `--out` extension: `.wav` or `.flac` for a master, `.m4a` (AAC, 128 kbps mono, 192 kbps stereo) for phones and podcasts, `.mp3` or `.opus` when a platform asks for them. Speech is mono; the output turns stereo as soon as a bed or music is stereo.
 
 Why 48 kHz: ElevenLabs resamples server-side, so any rate is free of charge; lossless WAV is served at 48 kHz on every paid tier while 44.1 kHz WAV and raw PCM are Pro-only; phones mix at 48 kHz; video expects it. `--rate` on `join`, `mix` and `noise` overrides it for a one-off export.
+
+## Denoising
+
+Renders carry a room tone, and loudness normalisation can raise it until it is audible. Every speech render (`tts`, `clips`, `piece`, `dialogue`, `sts`, `voices sample`, `voices audition`) is therefore denoised as it arrives, before any cut, join or normalisation, with [DPDFNet](https://github.com/ceva-ip/DPDFNet) at 48 kHz. In blind listening tests on ElevenLabs renders it cleaned the background with no audible effect on the voice and was preferred over every DeepFilterNet 3 setting, RNNoise, noisereduce and the ffmpeg filters (`plugin/skills/generate/references/pipeline-findings.md`). `--no-denoise` keeps a render as the API returned it; `--denoise-model 8` selects the larger model. Music, sound effects, noise beds and isolation are never touched. The model (10 MB, or 15 MB for the larger one) is downloaded on first use from a pinned revision of [Ceva-IP/DPDFNet](https://huggingface.co/Ceva-IP/DPDFNet) and checked against its SHA-256.
 
 ## Truncation guard
 
@@ -185,4 +192,4 @@ Tests mock the SDK at the `client.py` boundary (the only module importing it) an
 
 ## Licence
 
-MIT.
+MIT. The denoiser's inference path (`src/elevenlabs_cli/denoise.py`) is ported from DPDFNet, Copyright Ceva Inc., Apache License 2.0; the DPDFNet models are downloaded from their publisher under the same licence, not redistributed here.

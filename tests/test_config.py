@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from elevenlabs_cli.cli import main
-from elevenlabs_cli.config import Config, check_ranges, coerce, read_key_file, validate
+from elevenlabs_cli.config import Config, check_ranges, coerce, defaults, read_key_file, validate
 from elevenlabs_cli.errors import CliError
 
 
@@ -127,3 +127,12 @@ def test_config_set_on_read_only_folder_is_loud(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setenv("ELEVENLABS_CLI_CONFIG", "/proc/nope/config.json")
     assert main(["config", "init", "--api-key-env", "X"]) == 1
     assert "cannot write to /proc/nope" in capsys.readouterr().err
+
+
+def test_missing_keys_point_to_upgrade(tmp_path: Path) -> None:
+    values = defaults()
+    del values["denoise"]
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(values))
+    with pytest.raises(CliError, match="config upgrade"):
+        Config.load(str(path))

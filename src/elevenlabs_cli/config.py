@@ -51,6 +51,9 @@ SCHEMA: dict[str, Field] = {
     "short_line_model": Field("str", "eleven_multilingual_v2", "model for short lines; empty string disables the switch"),
     "turn_gap_min": Field("float", 0.15, "dialogue: shortest default gap between turns, seconds"),
     "turn_gap_max": Field("float", 0.45, "dialogue: longest default gap between turns, seconds"),
+    "denoise": Field("bool", True, "denoise every speech render with DPDFNet before any cut or normalisation (--no-denoise skips it once)"),
+    "denoise_model": Field("str", "dpdfnet2_48khz_hr", "DPDFNet model: dpdfnet2_48khz_hr (alias 2) or dpdfnet8_48khz_hr (alias 8, slower)"),
+    "model_cache_dir": Field("optional_path", None, "folder for downloaded denoise models (null = $XDG_CACHE_HOME or ~/.cache, then elevenlabs-cli/models)"),
     "reference_partner": Field("optional_str", None, "voice id used as the fixed partner in contrast auditions"),
     "voices": Field("voices", {}, "named voices per language: {\"en\": {\"narrator\": \"<voice id>\"}}"),
 }
@@ -177,7 +180,7 @@ def validate(raw: dict[str, Any]) -> dict[str, Any]:
             raise CliError(f"unknown config key '{key}' (known: {', '.join(SCHEMA)}). Remove it, or re-run 'elevenlabs-cli config init --force'.")
     missing = [key for key in SCHEMA if key not in raw]
     if missing:
-        raise CliError(f"config is missing keys: {', '.join(missing)}. Run 'elevenlabs-cli config init --force' or set them with 'config set'.")
+        raise CliError(f"config is missing keys: {', '.join(missing)}. Run 'elevenlabs-cli config upgrade' (adds them with their defaults, keeps your values) or set them with 'config set'.")
     values = {key: coerce(key, raw[key]) for key in SCHEMA}
     for key, value in values.items():
         check_ranges(key, value)
@@ -234,6 +237,12 @@ class Config:
     def output_dir(self) -> Path | None:
         """Base for relative output paths, or None for the current directory."""
         value = self.values["output_dir"]
+        return None if value is None else Path(value).expanduser()
+
+    @property
+    def model_cache_dir(self) -> Path | None:
+        """Folder for downloaded denoise models, or None for the default cache."""
+        value = self.values["model_cache_dir"]
         return None if value is None else Path(value).expanduser()
 
     def api_key(self) -> str:

@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .. import audio
+from .. import audio, net
 from .. import client as api
-from ..common import Context, Spend, confirm_spend, emit, report_saved, resolve_voice, say, table
+from ..common import Context, Spend, add_denoise_args, confirm_spend, emit, report_saved, resolve_voice, say, table
 from ..cost import billable_chars, estimate_credits
 from ..errors import CliError
 
@@ -47,6 +46,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     sample.add_argument("--text", help="text to render (default: a 20-second calm paragraph)")
     sample.add_argument("--model")
     sample.add_argument("--language")
+    add_denoise_args(sample)
     sample.set_defaults(func=run_sample)
 
     add = sub.add_parser("add", help="add a library voice to your account")
@@ -79,6 +79,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     audition.add_argument("--language")
     audition.add_argument("--lufs", type=float, default=-18.0, help="per-clip loudness of the samples (comparable listening)")
     audition.add_argument("--dry-run", action="store_true")
+    add_denoise_args(audition)
     audition.set_defaults(func=run_audition)
 
     rate = sub.add_parser("rate", help="record a verdict (1..5) and a note on a trial")
@@ -161,13 +162,14 @@ def run_sample(args: Any) -> None:
     text = args.text or api.SAMPLE_TEXT
     model = ctx.model(args.model)
     chars = billable_chars(text)
+    ctx.prepare_denoiser(dry_run=False)
     confirm_spend(ctx, Spend(chars * len(args.voices), estimate_credits(text, model) * len(args.voices), f"{len(args.voices)} sample(s) with {model}"))
     fmt = "mp3_44100_128"  # samples are for listening, not for the pipeline
     for name in args.voices:
         voice_id = resolve_voice(ctx, name, args.language)
         result = api.text_to_speech(ctx.client, voice_id, text, model, fmt, args.language, api.Settings(), None, None, None, None)
         target = out_dir / f"{voice_id}.mp3"
-        audio.write_api_audio(result.audio, fmt, target, ctx.workdir("sample"), 1)
+        ctx.write_speech(result.audio, fmt, target, ctx.workdir("sample"))
         report_saved(target)
 
 
@@ -180,11 +182,7 @@ def preview_url(ctx: Context, voice_id: str) -> str:
 
 
 def download(url: str, target: Path) -> None:
-    try:
-        with urllib.request.urlopen(url) as response:
-            target.write_bytes(response.read())
-    except OSError as exc:
-        raise CliError(f"could not download {url}: {exc}") from exc
+    net.download(url, target)
     say(f"saved: {target}")  # stderr, so --json output stays parseable
 
 
@@ -274,6 +272,7 @@ def run_audition(args: Any) -> None:
     per_trial = {m: estimate_credits(protocol.text, m) for m, _ in grid}
     total = sum(per_trial[m] for m, _ in grid) * len(candidates)
     say(f"protocol {protocol.id}: {chars} characters; {len(candidates)} voice(s) x {len(grid)} setting(s) = {len(candidates) * len(grid)} trials, about {total:g} credits")
+    say(f"denoise: {ctx.prepare_denoiser(args.dry_run)}")
     if args.dry_run:
         for v in candidates:
             for model, st in grid:
@@ -304,7 +303,7 @@ def run_audition(args: Any) -> None:
                 for n, paragraph in enumerate(paragraphs):
                     r = api.text_to_speech(ctx.client, v["voice_id"], paragraph, model, fmt, args.language if model != "eleven_multilingual_v2" else None, settings_of(model, st), 7, None, None, None)
                     raw = workdir / f"{n:02d}.wav"
-                    audio.write_api_audio(r.audio, fmt, raw, workdir / "decode", 1)
+                    ctx.write_speech(r.audio, fmt, raw, workdir / "decode")
                     audio.check_not_truncated(raw, ctx.config.get("truncation_db"), f"{v['name']} paragraph {n + 1}", True)
                     clips.append(audio.JoinItem(file=str(raw)))
                     if n + 1 < len(paragraphs):

@@ -11,7 +11,6 @@ from elevenlabs_cli import script
 from elevenlabs_cli.cli import main
 from elevenlabs_cli.cost import model_info
 from elevenlabs_cli.errors import CliError
-from tests.test_commands import fake_api  # noqa: F401  (fixture)
 
 SCRIPT = """# a timed script
 [pause 1.5]

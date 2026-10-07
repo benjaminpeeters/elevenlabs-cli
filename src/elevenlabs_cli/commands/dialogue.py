@@ -24,7 +24,7 @@ from typing import Any
 
 from .. import audio, turns
 from .. import client as api
-from ..common import Context, Spend, confirm_spend, read_text_input, report_saved, resolve_voice, say, table
+from ..common import Context, Spend, add_denoise_args, confirm_spend, read_text_input, report_saved, resolve_voice, say, table
 from ..cost import billable_chars, estimate_credits, model_info
 from ..errors import CliError
 from .join import sidecar_path
@@ -64,6 +64,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--out")
     parser.add_argument("--dry-run", action="store_true", help="print the turn plan and the credits, spend nothing")
     parser.add_argument("--allow-truncated", dest="allow_truncated", action="store_true", help="keep renders whose tail the API cut short")
+    add_denoise_args(parser)
     parser.set_defaults(func=run)
 
 
@@ -139,7 +140,7 @@ def render_per_turn(ctx: Context, lines: list[turns.Line], profiles: dict[str, S
             previous = lines[index - 1].text if index > 0 else None
             following = lines[index + 1].text if index + 1 < len(lines) else None
             result = api.text_to_speech(ctx.client, profile.voice_id, line.text, model, fmt, None, profile.settings, line_seed, None, previous, following)
-            audio.write_api_audio(result.audio, fmt, raw, workdir / "decode", 1)
+            ctx.write_speech(result.audio, fmt, raw, workdir / "decode")
         else:
             render_with_sacrificial_tail(ctx, profile.voice_id, line.text, model, fmt, language, profile.settings, line_seed, raw, workdir / "decode")
         audio.check_not_truncated(raw, ctx.config.get("truncation_db"), f"line {line.number} ({line.speaker})", allow_truncated)
@@ -155,7 +156,7 @@ def render_with_sacrificial_tail(ctx: Context, voice_id: str, text: str, model: 
     result = api.text_to_speech_timed(ctx.client, voice_id, full, model, fmt, language, settings, seed, None, None)
     workdir.mkdir(parents=True, exist_ok=True)
     raw = workdir / (out.stem + "_full.wav")
-    audio.write_api_audio(result.audio, fmt, raw, workdir, 1)
+    ctx.write_speech(result.audio, fmt, raw, workdir)
     if result.alignment is None:
         raise CliError(f"the API returned no alignment for '{text[:40]}'; cannot cut the sacrificial tail")
     chars = "".join(result.alignment.characters)
@@ -174,7 +175,7 @@ def render_segments(ctx: Context, lines: list[turns.Line], profiles: dict[str, S
         inputs = [(profiles[l.speaker].voice_id, l.text) for l in chunk] + [(profiles[chunk[-1].speaker].voice_id, SACRIFICIAL_LINE)]
         result = api.text_to_dialogue_timed(ctx.client, inputs, model, fmt, language, stability, seed)
         raw = workdir / f"chunk{number:02d}.wav"
-        audio.write_api_audio(result.audio, fmt, raw, workdir / "decode", 1)
+        ctx.write_speech(result.audio, fmt, raw, workdir / "decode")
         duration = audio.probe(raw).duration
         segments = sorted(result.segments)
         (workdir / f"chunk{number:02d}_segments.json").write_text(json.dumps(segments), encoding="utf-8")
@@ -218,7 +219,7 @@ def render_dialogue(ctx: Context, script: str, profiles: dict[str, SpeakerProfil
         for number, chunk in enumerate(chunk_lines(lines)):
             data = api.text_to_dialogue(ctx.client, [(resolved[l.speaker].voice_id, l.text) for l in chunk], endpoint_model, fmt, language, stability, seed)
             raw = workdir / f"chunk{number:02d}.wav"
-            audio.write_api_audio(data, fmt, raw, workdir / "decode", 1)
+            ctx.write_speech(data, fmt, raw, workdir / "decode")
             audio.check_not_truncated(raw, ctx.config.get("truncation_db"), f"chunk {number + 1}", allow_truncated)
             parts.append(raw)
         items = [audio.JoinItem(file=str(p)) for p in parts]
@@ -257,12 +258,13 @@ def run(args: Any) -> None:
         models = [endpoint] * len(lines)
     chars = sum(billable_chars(l.text) for l in lines)
     credits = sum(estimate_credits(l.text, m) for l, m in zip(lines, models))
+    denoising = ctx.prepare_denoiser(args.dry_run)
     if args.dry_run:
         seed = args.seed if args.seed is not None else turns.script_seed(script)
         plan = turns.plan_turns(lines, seed, ctx.config.get("turn_gap_min"), ctx.config.get("turn_gap_max"))
         rows = [(n, sp, ch, turn, reason, m) for (n, sp, ch, turn, reason), m in zip(turns.describe(lines, plan), models)]
         print(table(rows, ("line", "speaker", "chars", "turn", "reason", "model")))
-        print(f"mode: {args.mode}\nseed: {seed}\ncharacters: {chars}\ncredits: {credits:g}")
+        print(f"mode: {args.mode}\nseed: {seed}\ncharacters: {chars}\ncredits: {credits:g}\ndenoise: {denoising}")
         return
     out = ctx.resolve_out(args.out)
     confirm_spend(ctx, Spend(chars, credits, f"{len(lines)} lines, {len(profiles)} speakers, mode {args.mode}"))

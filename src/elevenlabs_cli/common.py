@@ -10,10 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from . import audio, denoise
 from . import client as api
 from .config import API_RATES, Config
 from .errors import CliError
 
+UNPREPARED = object()  # the denoiser before prepare_denoiser has settled it
 NEVER_ASK = 100000  # confirm_above_chars at or above this never asks, even for per-call billing
 
 OUTPUT_FORMATS = (
@@ -32,6 +34,7 @@ class Context:
         self.args = args
         self.config = Config.load(args.config)
         self._client: Any = None
+        self._denoiser: Any = UNPREPARED  # set by prepare_denoiser: the enhancer, or None when off
 
     @property
     def json(self) -> bool:
@@ -46,6 +49,49 @@ class Context:
         if self._client is None:
             self._client = api.make_client(self.config.api_key())
         return self._client
+
+    def prepare_denoiser(self, dry_run: bool) -> str:
+        """Settle denoising for this run before anything is billed; returns what a dry run reports.
+
+        Every speech command calls this before its dry-run exit and before confirm_spend. The flags
+        and the model name are checked in every case; outside a dry run the model is also loaded,
+        downloading it on first use, so an unusable model fails before any credit is spent.
+        """
+        if not hasattr(self.args, "no_denoise"):
+            raise CliError(f"internal: '{self.args.command}' writes speech but does not declare --no-denoise")
+        if self.args.no_denoise and self.args.denoise_model:
+            raise CliError("--denoise-model and --no-denoise contradict each other")
+        if self.args.no_denoise or not (self.config.get("denoise") or self.args.denoise_model):
+            name = None
+        else:
+            name = denoise.resolve_model(self.args.denoise_model or self.config.get("denoise_model"))
+        if not dry_run:
+            if name is not None:
+                say(f"denoising speech with {name}")
+                self._denoiser = denoise.load(name, self.config.model_cache_dir or denoise.default_cache_dir())
+            else:
+                self._denoiser = None
+        return name or "off"
+
+    def write_speech(self, data: bytes, api_format: str, output: Path, workdir: Path) -> None:
+        """Write a mono speech render as the API returned it, denoised unless switched off.
+
+        Every speech command writes its renders through here, so the denoiser sees each request whole:
+        a one-take piece or a render with a sacrificial tail is cleaned before it is cut, and every
+        clip before any loudness normalisation can raise what is left of its room tone. A denoised
+        render is cleaned as a working WAV and delivered from it at the working rate, like every
+        delivered file (a lossy API format, such as the MP3 that voices sample asks for, is
+        therefore decoded and re-encoded once).
+        """
+        if self._denoiser is UNPREPARED:
+            raise CliError(f"internal: '{self.args.command}' writes speech before prepare_denoiser")
+        if self._denoiser is None:
+            audio.write_api_audio(data, api_format, output, workdir, 1)
+            return
+        working = workdir / f"{output.stem}.render.wav"
+        audio.write_api_audio(data, api_format, working, workdir, 1)
+        denoise.denoise_file(working, self._denoiser, workdir / "denoise", self.sample_rate)
+        audio.deliver(working, output, self.sample_rate, self.config.channels)
 
     def workdir(self, label: str) -> Path:
         return Path(tempfile.mkdtemp(prefix=f"elevenlabs-cli-{label}-"))
@@ -137,6 +183,12 @@ def confirm_spend(ctx: Context, spend: Spend) -> None:
     answer = input("Proceed? [y/N] ").strip().lower()
     if answer not in ("y", "yes"):
         raise CliError("cancelled", exit_code=2)
+
+
+def add_denoise_args(parser: Any) -> None:
+    """The two flags of every command that writes speech."""
+    parser.add_argument("--no-denoise", dest="no_denoise", action="store_true", help="keep the renders as the API returned them (default: DPDFNet denoising, config denoise)")
+    parser.add_argument("--denoise-model", dest="denoise_model", help="2 = dpdfnet2_48khz_hr (default), 8 = dpdfnet8_48khz_hr (slower); config denoise_model. Denoises this run even when config denoise is false")
 
 
 def say(message: str) -> None:
